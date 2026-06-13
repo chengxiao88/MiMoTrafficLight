@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Windows / IDE
+.vscode/
+*.log
+
+# Local install output
+app/
+dist/
+publish/
+
+# Local Claude / MiMo private config
+.claude/settings.json
+.mimocode/
+*.local.json
+
+# Runtime state
+status.json
+events.log
+sessions/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Node dependencies if plugin tooling is added later
+node_modules/
