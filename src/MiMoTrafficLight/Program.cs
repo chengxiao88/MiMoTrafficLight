@@ -1,4 +1,5 @@
 using System;
+using System.Security.Principal;
 using System.Windows.Forms;
 
 namespace MiMoTrafficLight;
@@ -10,7 +11,11 @@ internal static class Program
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var mutex = new System.Threading.Mutex(true, "Global\\MiMoTrafficLight_UserInstance", out var createdNew);
+
+        var sid = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;
+        var mutexName = $@"Local\MiMoTrafficLight_{sid}";
+
+        using var mutex = new System.Threading.Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             return;

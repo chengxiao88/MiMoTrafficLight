@@ -171,8 +171,8 @@ MiMoTrafficLight/
 │   └── mimo-traffic-light.js   MiMo Code event probe plugin
 ├── docs/
 │   └── PRD.md                  Product requirements document
-├── README.md                   English documentation
-├── README_zh.md                Chinese documentation
+├── README.md                   中文文档
+├── README_en.md                English documentation
 └── .gitignore
 ```
 

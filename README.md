@@ -171,8 +171,8 @@ MiMoTrafficLight/
 │   └── mimo-traffic-light.js   MiMo Code 事件探针插件
 ├── docs/
 │   └── PRD.md                  产品需求文档
-├── README.md                   英文文档
-├── README_zh.md                中文文档
+├── README.md                   中文文档
+├── README_en.md                English documentation
 └── .gitignore
 ```
 

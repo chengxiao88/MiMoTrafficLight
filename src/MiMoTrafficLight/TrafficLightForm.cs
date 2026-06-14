@@ -18,7 +18,6 @@ internal sealed class TrafficLightForm : Form
     private readonly NotifyIcon _notifyIcon = new();
     private readonly ContextMenuStrip _trayMenu = new();
     private FileSystemWatcher? _watcher;
-    private Icon? _currentIcon;
 
     private TrafficLightState _state = TrafficLightState.Off;
     private TrafficLightState _steadyAfterFlash = TrafficLightState.Off;
@@ -29,6 +28,8 @@ internal sealed class TrafficLightForm : Form
     private DateTimeOffset _lastUpdate = DateTimeOffset.MinValue;
     private string _cwd = "";
     private string _session = "";
+    private string _lastTrayIconKey = string.Empty;
+    private readonly string _settingsFile;
 
     private const int DotDiameter = 10;
     private const int DotGap = 8;
@@ -49,6 +50,9 @@ internal sealed class TrafficLightForm : Form
 
     [DllImport("gdi32.dll")]
     private static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
@@ -96,8 +100,10 @@ internal sealed class TrafficLightForm : Form
 
         _baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiMoLight");
         _statusFile = Path.Combine(_baseDir, "status.json");
+        _settingsFile = Path.Combine(_baseDir, "settings.json");
 
         Directory.CreateDirectory(_baseDir);
+        RestoreSettings();
         ConfigureTray();
         ConfigureTimers();
         PositionBottomRight();
@@ -120,10 +126,10 @@ internal sealed class TrafficLightForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        SaveSettings();
         _watcher?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
-        _currentIcon?.Dispose();
         base.OnFormClosing(e);
     }
 
@@ -355,14 +361,26 @@ internal sealed class TrafficLightForm : Form
 
     private void UpdateVisuals()
     {
-        var icon = CreateIcon();
-        var old = _currentIcon;
-        Icon = icon;
-        _notifyIcon.Icon = icon;
+        UpdateTrayIconIfNeeded();
         _notifyIcon.Text = GetToolTipText();
-        _currentIcon = icon;
-        old?.Dispose();
         Invalidate();
+    }
+
+    private string GetTrayIconKey()
+    {
+        return $"{ShouldLightRed()}|{ShouldLightYellow()}|{ShouldLightGreen()}";
+    }
+
+    private void UpdateTrayIconIfNeeded()
+    {
+        var key = GetTrayIconKey();
+        if (key == _lastTrayIconKey) return;
+        _lastTrayIconKey = key;
+
+        var oldIcon = _notifyIcon.Icon;
+        _notifyIcon.Icon = CreateIcon();
+        Icon = _notifyIcon.Icon;
+        oldIcon?.Dispose();
     }
 
     private string GetToolTipText()
@@ -392,15 +410,28 @@ internal sealed class TrafficLightForm : Form
         DrawIconDot(g, 50, ShouldLightGreen() ? GreenOn : DotOff);
 
         var hbm = bmp.GetHbitmap();
+        var hIcon = IntPtr.Zero;
+
         try
         {
             var info = new ICONINFO { fIcon = true, hbmMask = hbm, hbmColor = hbm };
-            var hIcon = CreateIconIndirect(ref info);
+            hIcon = CreateIconIndirect(ref info);
+
+            if (hIcon == IntPtr.Zero)
+            {
+                return SystemIcons.Application;
+            }
+
             using var tmp = Icon.FromHandle(hIcon);
             return (Icon)tmp.Clone();
         }
         finally
         {
+            if (hIcon != IntPtr.Zero)
+            {
+                DestroyIcon(hIcon);
+            }
+
             DeleteObject(hbm);
         }
     }
@@ -428,6 +459,50 @@ internal sealed class TrafficLightForm : Form
     {
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
         Location = new Point(area.Right - Width - 16, area.Bottom - Height - 8);
+    }
+
+    private void SaveSettings()
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                x = Left,
+                y = Top
+            }, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_settingsFile, json);
+        }
+        catch { }
+    }
+
+    private void RestoreSettings()
+    {
+        try
+        {
+            if (!File.Exists(_settingsFile)) return;
+            var json = File.ReadAllText(_settingsFile);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            int x = root.TryGetProperty("x", out var xProp) ? xProp.GetInt32() : -1;
+            int y = root.TryGetProperty("y", out var yProp) ? yProp.GetInt32() : -1;
+
+            if (x < 0 || y < 0) return;
+
+            var allScreens = Screen.AllScreens;
+            bool visible = false;
+            foreach (var screen in allScreens)
+            {
+                if (screen.WorkingArea.Contains(x, y)) { visible = true; break; }
+            }
+
+            if (visible)
+            {
+                Left = x;
+                Top = y;
+            }
+        }
+        catch { }
     }
 
     private static void BringMiMoTerminalToFront()

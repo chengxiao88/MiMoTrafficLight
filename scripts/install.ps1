@@ -43,20 +43,18 @@ Write-Host "Plugin copied to: $pluginDstLocal"
 $pluginInstalled = $false
 
 $mimocodePluginDir = Join-Path $env:USERPROFILE ".config\mimocode\plugins"
+New-Item -ItemType Directory -Force -Path $mimocodePluginDir | Out-Null
 $mimocodePluginDst = Join-Path $mimocodePluginDir "mimo-traffic-light.js"
-if (Test-Path $mimocodePluginDir) {
-    Copy-Item $pluginSrc $mimocodePluginDst -Force
-    Write-Host "Plugin installed to MiMo Code plugin dir: $mimocodePluginDst"
-    $pluginInstalled = $true
-}
+Copy-Item $pluginSrc $mimocodePluginDst -Force
+Write-Host "Plugin installed to MiMo Code plugin dir: $mimocodePluginDst"
+$pluginInstalled = $true
 
 $opencodePluginDir = Join-Path $env:USERPROFILE ".config\opencode\plugins"
+New-Item -ItemType Directory -Force -Path $opencodePluginDir | Out-Null
 $opencodePluginDst = Join-Path $opencodePluginDir "mimo-traffic-light.js"
-if (Test-Path $opencodePluginDir) {
-    Copy-Item $pluginSrc $opencodePluginDst -Force
-    Write-Host "Plugin installed to OpenCode plugin dir: $opencodePluginDst"
-    $pluginInstalled = $true
-}
+Copy-Item $pluginSrc $opencodePluginDst -Force
+Write-Host "Plugin installed to OpenCode plugin dir: $opencodePluginDst"
+$pluginInstalled = $true
 
 if (-not $pluginInstalled) {
     Write-Host ""
