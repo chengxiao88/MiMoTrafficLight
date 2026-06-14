@@ -9,8 +9,14 @@ const eventLogFile = path.join(stateDir, "events.log")
 
 const MAX_LOG_SIZE = 1024 * 1024
 const DEBUG_LOG = process.env.MIMO_TRAFFIC_LIGHT_DEBUG === "1"
+const DONE_QUIET_MS = Math.max(1000, Number.parseInt(process.env.MIMO_TRAFFIC_LIGHT_DONE_QUIET_MS || "2500", 10) || 2500)
+const HEARTBEAT_MS = 5000
+const DONE_RESIDUAL_IGNORE_MS = 3000
 
 let lastState = "Idle"
+let stateChangedAt = Date.now()
+let lastStatusWriteAt = 0
+let doneTimer = null
 
 function ensureDir() {
   fs.mkdirSync(stateDir, { recursive: true })
@@ -41,14 +47,198 @@ function appendLog(line) {
   fs.appendFileSync(eventLogFile, line + "\n", "utf8")
 }
 
+function getEventType(event) {
+  return String(event?.type || event?.name || "").toLowerCase()
+}
+
+function valueText(value) {
+  if (value == null) return ""
+  if (typeof value === "string") return value.toLowerCase()
+  if (typeof value === "number" || typeof value === "boolean") return String(value).toLowerCase()
+  try {
+    return JSON.stringify(value).toLowerCase()
+  } catch {
+    return String(value).toLowerCase()
+  }
+}
+
+function getStatusText(event) {
+  return valueText(
+    event?.status ||
+    event?.state ||
+    event?.properties?.status?.type ||
+    event?.properties?.status ||
+    event?.properties?.state ||
+    ""
+  )
+}
+
+function getSessionId(event) {
+  return (
+    event?.sessionID ||
+    event?.sessionId ||
+    event?.session?.id ||
+    event?.properties?.sessionID ||
+    event?.properties?.sessionId ||
+    null
+  )
+}
+
+function getToolName(event) {
+  const tool = event?.properties?.tool || event?.tool || event?.toolName || event?.properties?.toolName
+  if (!tool) return ""
+  if (typeof tool === "string") return tool.toLowerCase()
+  return String(tool.name || tool.id || tool.type || tool.callID || "").toLowerCase()
+}
+
+function includesAny(text, values) {
+  return values.some((value) => text.includes(value))
+}
+
+function isPermissionReleaseEvent(type) {
+  return (
+    type === "permission.replied" ||
+    type === "question.replied" ||
+    type === "question.rejected" ||
+    type.includes("permission.replied") ||
+    type.includes("approval.replied")
+  )
+}
+
+function isPermissionRequestEvent(type, status) {
+  if (type === "permission.asked" || type === "question.asked") return true
+  if (type.includes("permission") && !type.includes("replied") && !type.includes("reject")) return true
+  if (type.includes("approval") && (type.includes("request") || type.includes("ask"))) return true
+
+  return includesAny(status, [
+    "waiting_for_approval",
+    "requires_permission",
+    "permission_required",
+    "awaiting_permission",
+    "permission_requested"
+  ])
+}
+
+function isErrorEvent(type, status) {
+  return (
+    type.includes("error") ||
+    includesAny(status, ["error", "failed", "failure"])
+  )
+}
+
+function isDoneEvent(type, status) {
+  if (
+    type === "session.idle" ||
+    type === "session.done" ||
+    type === "session.completed" ||
+    type === "server.instance.disposed"
+  ) {
+    return true
+  }
+
+  return includesAny(status, ["idle", "completed", "complete", "done", "success"])
+}
+
+function isIdleEvent(type) {
+  return (
+    type === "session.created" ||
+    type === "server.connected" ||
+    type === "plugin.initialized"
+  )
+}
+
+function isWorkingEvent(type, status) {
+  if (
+    type === "tool.execute.before" ||
+    type.includes("tool.call") ||
+    type.includes("tool.started") ||
+    type.includes("assistant.started")
+  ) {
+    return true
+  }
+
+  return includesAny(status, ["busy", "running", "working"])
+}
+
+function isToolAfterEvent(type) {
+  return type === "tool.execute.after" || type.includes("tool.execute.after")
+}
+
+function isMessageActivity(type) {
+  return (
+    type === "message.part.delta" ||
+    type === "message.part.updated" ||
+    type === "message.updated"
+  )
+}
+
+function isPassiveEvent(type) {
+  return (
+    type === "" ||
+    type.startsWith("metrics.") ||
+    [
+      "actor.registered",
+      "actor.status",
+      "file.edited",
+      "file.watcher.updated",
+      "hook.executed",
+      "hook.react.reentered",
+      "session.diff",
+      "session.updated",
+      "task.created",
+      "writer.cache_perf"
+    ].includes(type)
+  )
+}
+
+function shouldIgnoreResidualMessage(type) {
+  return lastState === "Done" &&
+    isMessageActivity(type) &&
+    Date.now() - stateChangedAt < DONE_RESIDUAL_IGNORE_MS
+}
+
+function summarizeEvent(event, state, action, reason) {
+  const type = getEventType(event) || "unknown"
+  const status = getStatusText(event)
+  const tool = getToolName(event)
+  const sessionId = getSessionId(event)
+  const parts = [`type=${type}`, `state=${state}`, `action=${action}`]
+
+  if (reason) parts.push(`reason=${reason}`)
+  if (status) parts.push(`status=${status}`)
+  if (tool) parts.push(`tool=${tool}`)
+  if (sessionId) parts.push(`session=${sessionId}`)
+
+  return parts.join(" ")
+}
+
+function debugEventInfo(event) {
+  return {
+    type: getEventType(event) || "unknown",
+    status: getStatusText(event) || null,
+    tool: getToolName(event) || null,
+    sessionId: getSessionId(event) || null,
+    keys: Object.keys(event || {}),
+    propertyKeys: Object.keys(event?.properties || {})
+  }
+}
+
+function logDecision(event, state, action, reason, wroteStatus) {
+  const type = getEventType(event)
+  if (!DEBUG_LOG && isMessageActivity(type) && !wroteStatus) return
+
+  const suffix = DEBUG_LOG ? ` debug=${safeJson(debugEventInfo(event))}` : ""
+  appendLog(`[${new Date().toISOString()}] ${summarizeEvent(event, state, action, reason)}${suffix}`)
+}
+
 function writeStatus(state, event, context = {}) {
   ensureDir()
 
   const payload = {
     state,
     source: "mimocode",
-    event: event?.type || event?.name || "unknown",
-    sessionId: event?.sessionID || event?.sessionId || event?.session?.id || null,
+    event: getEventType(event) || "unknown",
+    sessionId: getSessionId(event),
     projectDir: context?.directory || context?.worktree || process.cwd() || null,
     updatedAt: new Date().toISOString()
   }
@@ -66,133 +256,138 @@ function writeStatus(state, event, context = {}) {
   }
 }
 
-function shouldIgnoreEventAfterIdle(type) {
-  if (lastState !== "Done" && lastState !== "Idle") return false
+function setState(state, event, context = {}, options = {}) {
+  const now = Date.now()
+  const changed = state !== lastState
+  lastState = state
 
-  return (
-    type.includes("message.updated") ||
-    type.includes("session.updated") ||
-    type.includes("metrics.") ||
-    type.includes("session.diff")
-  )
+  if (changed) {
+    stateChangedAt = now
+  }
+
+  const shouldWrite = changed || options.force === true || now - lastStatusWriteAt >= HEARTBEAT_MS
+  if (!shouldWrite) return false
+
+  writeStatus(state, event, context)
+  lastStatusWriteAt = now
+  return true
 }
 
-function mapEventToState(event) {
-  const type = String(event?.type || event?.name || "").toLowerCase()
-  const status = String(event?.status || event?.state || "").toLowerCase()
+function scheduleDoneTransition(context, reason = "quiet") {
+  if (doneTimer) clearTimeout(doneTimer)
+  doneTimer = setTimeout(() => {
+    if (lastState === "Thinking") {
+      const event = { type: "auto.done", reason }
+      const wrote = setState("Done", event, context, { force: true })
+      logDecision(event, "Done", wrote ? "written" : "kept", reason, wrote)
+    }
+    doneTimer = null
+  }, DONE_QUIET_MS)
+}
 
-  if (
-    type.includes("permission") ||
-    type.includes("approval") ||
-    status.includes("waiting_for_approval") ||
-    status.includes("requires_permission")
-  ) {
-    return "Permission"
+function cancelDoneTransition() {
+  if (doneTimer) {
+    clearTimeout(doneTimer)
+    doneTimer = null
+  }
+}
+
+function decideState(event) {
+  const type = getEventType(event)
+  const status = getStatusText(event)
+  const toolName = getToolName(event)
+
+  if (isPermissionReleaseEvent(type)) {
+    return { state: "Thinking", reason: "permission-released", scheduleDone: true }
   }
 
-  if (
-    type.includes("error") ||
-    status.includes("error") ||
-    status.includes("failed")
-  ) {
-    return "Error"
+  if (isPermissionRequestEvent(type, status) || toolName === "question") {
+    return { state: "Permission", reason: "permission-requested", cancelDone: true, force: true }
   }
 
-  if (
-    type.includes("tool.call") ||
-    type.includes("tool.execute.before") ||
-    type.includes("tool.started") ||
-    type.includes("assistant.started") ||
-    status.includes("running") ||
-    status.includes("working") ||
-    status.includes("thinking")
-  ) {
-    const toolName = String(event?.properties?.tool || event?.tool || "").toLowerCase()
-    if (toolName === "question") return "Permission"
-    return "Working"
+  if (isErrorEvent(type, status)) {
+    return { state: "Error", reason: "error", cancelDone: true, force: true }
   }
 
-  if (type.includes("tool.execute.after") || type.includes("permission.replied")) {
-    return "Thinking"
+  if (lastState === "Permission") {
+    return { ignore: true, reason: "protect-permission" }
   }
 
-  if (
-    type.includes("session.idle") ||
-    type.includes("session.done") ||
-    status.includes("idle") ||
-    status.includes("completed") ||
-    status.includes("done")
-  ) {
-    return "Done"
+  if (isDoneEvent(type, status)) {
+    return { state: "Done", reason: "done", cancelDone: true, force: true }
   }
 
-  if (type.includes("session.created") || type.includes("server.connected") || type.includes("plugin.initialized")) {
-    return "Idle"
+  if (isIdleEvent(type)) {
+    return { state: "Idle", reason: "idle", cancelDone: true, force: true }
   }
 
-  if (type.includes("session.status")) {
-    const statusType = String(event?.properties?.status?.type || "").toLowerCase()
-    if (statusType === "busy") return "Working"
-    if (statusType === "idle") return "Done"
-    return "Thinking"
+  if (isWorkingEvent(type, status)) {
+    return { state: "Working", reason: "working", cancelDone: true }
   }
 
-  if (type.includes("message.part.delta") || type.includes("message.part.updated")) {
-    return "Thinking"
+  if (isToolAfterEvent(type)) {
+    return { state: "Thinking", reason: "tool-finished", scheduleDone: true }
   }
 
-  if (type.includes("message.updated") || type.includes("todo.updated") || type.includes("session.updated")) {
-    return "Thinking"
+  if (shouldIgnoreResidualMessage(type)) {
+    return { ignore: true, reason: "done-residual-message" }
   }
 
-  if (type.includes("session.diff") || type.includes("metrics.")) {
-    return "Thinking"
+  if (isMessageActivity(type) || type === "todo.updated") {
+    return { state: "Thinking", reason: "message-activity", scheduleDone: true }
   }
 
-  return lastState || "Idle"
+  if (isPassiveEvent(type)) {
+    return { ignore: true, reason: "passive" }
+  }
+
+  return { ignore: true, reason: "unknown" }
+}
+
+function handleEvent(event, context) {
+  const decision = decideState(event)
+
+  if (decision.ignore) {
+    logDecision(event, lastState, "ignored", decision.reason, false)
+    return
+  }
+
+  if (decision.cancelDone !== false) {
+    cancelDoneTransition()
+  }
+
+  const wrote = setState(decision.state, event, context, { force: decision.force })
+  logDecision(event, decision.state, wrote ? "written" : "kept", decision.reason, wrote)
+
+  if (decision.scheduleDone) {
+    scheduleDoneTransition(context, decision.reason)
+  }
 }
 
 export const MiMoTrafficLightPlugin = async (context) => {
-  appendLog(`[${new Date().toISOString()}] plugin.initialized ${safeJson({
-    directory: context?.directory,
-    worktree: context?.worktree
-  })}`)
-
-  writeStatus("Idle", { type: "plugin.initialized" }, context)
+  const initEvent = { type: "plugin.initialized" }
+  const wrote = setState("Idle", initEvent, context, { force: true })
+  logDecision(initEvent, "Idle", wrote ? "written" : "kept", "plugin-initialized", wrote)
 
   return {
     event: async ({ event }) => {
-      const type = String(event?.type || event?.name || "").toLowerCase()
-
-      if (shouldIgnoreEventAfterIdle(type)) {
-        appendLog(`[${new Date().toISOString()}] ignored type=${type} lastState=${lastState}`)
-        return
-      }
-
-      const state = mapEventToState(event)
-      lastState = state
-
-      if (DEBUG_LOG) {
-        appendLog(`[${new Date().toISOString()}] ${safeJson(event)}`)
-      } else {
-        appendLog(`[${new Date().toISOString()}] type=${type} state=${state}`)
-      }
-
-      writeStatus(state, event, context)
+      handleEvent(event, context)
     },
 
     "tool.execute.before": async (input, output) => {
       const toolName = String(input?.tool || output?.args?.tool || "").toLowerCase()
-      const state = toolName === "question" ? "Permission" : "Working"
-      lastState = state
-      appendLog(`[${new Date().toISOString()}] tool.execute.before type=${toolName} state=${state}`)
-      writeStatus(state, { type: "tool.execute.before" }, context)
+      handleEvent(
+        { type: "tool.execute.before", tool: toolName, properties: { tool: toolName } },
+        context
+      )
     },
 
     "tool.execute.after": async (input, output) => {
-      lastState = "Thinking"
-      appendLog(`[${new Date().toISOString()}] tool.execute.after state=Thinking`)
-      writeStatus("Thinking", { type: "tool.execute.after" }, context)
+      const toolName = String(input?.tool || output?.args?.tool || "").toLowerCase()
+      handleEvent(
+        { type: "tool.execute.after", tool: toolName, properties: { tool: toolName } },
+        context
+      )
     }
   }
 }
