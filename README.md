@@ -4,6 +4,8 @@
 
 本项目从 [ClaudeTrafficLight](https://github.com/chengxiao88/ClaudeTrafficLight) 改造而来，不再使用 Claude Code Hooks，状态来源改为 MiMo Code / OpenCode 插件事件。
 
+当前 MiMo 状态条使用**灰色背景和灰色边框**，用于和 ClaudeTrafficLight 的深色状态条区分。
+
 ## 它是什么
 
 | 灯色 | 含义 |
@@ -14,7 +16,7 @@
 | 🟡 **黄灯常亮** | MiMo 正在执行工具 |
 | 🔴 **红灯闪烁** | MiMo 等待你授权确认 |
 | 🔴 **红灯常亮** | 发生错误 |
-| ⚫ **三灯全灭** | MiMo 未运行或状态超过 30 分钟无更新 |
+| ⚫ **三灯全灭** | MiMo 未运行或状态超过 30 分钟无更新；红绿灯进程继续待命 |
 
 灯同时在**桌面小窗口**和**系统托盘**（任务栏右侧小图标）显示。
 
@@ -38,6 +40,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 - 复制脚本到 `%LOCALAPPDATA%\MiMoLight\scripts\`
 - 复制插件到 `%LOCALAPPDATA%\MiMoLight\plugins\`
 - 尝试安装插件到 MiMo Code 插件目录（`~/.config/mimocode/plugins/`）
+- 尝试安装插件到 OpenCode 插件目录（`~/.config/opencode/plugins/`）
 
 ### 2. 启动
 
@@ -118,8 +121,8 @@ Windows 桌面红黄绿灯 + 托盘图标
 ### 事件探针插件
 
 `plugins/mimo-traffic-light.js` 是一个事件探针插件，功能：
-1. 记录所有 MiMo Code 事件到 `%LOCALAPPDATA%\MiMoLight\events.log`
-2. 根据保守规则将事件映射为状态
+1. 记录关键状态决策到 `%LOCALAPPDATA%\MiMoLight\events.log`
+2. 根据保守状态机将 MiMo / OpenCode 事件映射为状态
 3. 写入 `status.json` 供桌面程序读取
 
 **事件映射规则（已通过真实 MiMo Code 事件验证）：**
@@ -130,15 +133,19 @@ Windows 桌面红黄绿灯 + 托盘图标
 | `session.created` | Idle |
 | `session.status` → `busy` | Working |
 | `session.status` → `idle` | Done |
-| `message.updated` / `message.part.updated` | Thinking |
-| `message.part.delta` | Thinking |
-| `tool.execute.before` | Working |
+| `message.updated` / `message.part.updated` / `message.part.delta` | Thinking |
+| `tool.execute.before` | Working；如果工具是 `question` 则 Permission |
 | `tool.execute.after` | Thinking |
-| `permission.asked` | Permission |
-| `permission.replied` | Thinking |
-| `session.idle` | Done |
+| `permission.asked` / `question.asked` | Permission |
+| `permission.replied` / `question.replied` / `question.rejected` | Thinking |
+| `session.idle` / `server.instance.disposed` | Done |
 | `session.error` / `error` | Error |
-| 未知事件 | Thinking（记录到 events.log） |
+| `metrics.*` / `session.updated` / `session.diff` 等被动事件 | 保持当前状态 |
+| 未知事件 | 保持当前状态，并记录到 events.log |
+
+授权等待状态会被保护：MiMo 弹出 Allow/授权选择时，普通 `message.*`、`session.updated` 等噪声不会把红灯提前冲掉。用户完成选择后，`question.replied` 或 `tool.execute.after` 会让状态回到 Thinking；任务真正结束后再由 `session.idle` 等事件切到 Done。
+
+完成状态也会被保护：任务结束后的尾部 `message.*` 噪声不会把绿灯重新打回黄灯。
 
 ### 查看事件日志
 
@@ -242,9 +249,9 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 - 右键托盘图标可定位或退出
 - 点击窗口或托盘图标可将 MiMo 终端带到前台
 
-### 红灯 30 分钟后自动熄灭
+### 红绿灯 30 分钟后自动熄灭
 
-正常行为。如果状态超过 30 分钟无更新，灯会自动熄灭（Off 状态）。
+正常行为。如果状态超过 30 分钟无更新，灯会自动熄灭（Off 状态），但 `MiMoTrafficLight.exe` 进程不会退出，后续收到新状态会继续亮灯。
 
 ## 与 ClaudeTrafficLight 的区别
 
@@ -255,6 +262,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 | 状态目录 | `%LOCALAPPDATA%\ClaudeLight` | `%LOCALAPPDATA%\MiMoLight` |
 | 启动脚本 | `start-claude.cmd` | `start-mimo.cmd` |
 | 桌面程序 | `ClaudeTrafficLight.exe` | `MiMoTrafficLight.exe` |
+| 状态条外观 | 深色背景 | 灰色背景、灰色边框 |
 
 ## 说明
 

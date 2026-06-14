@@ -4,6 +4,8 @@
 
 This project was adapted from [ClaudeTrafficLight](https://github.com/chengxiao88/ClaudeTrafficLight). It no longer uses Claude Code Hooks — status is sourced from MiMo Code / OpenCode plugin events.
 
+The MiMo status bar uses a **gray background and gray border** so it is visually distinct from the darker ClaudeTrafficLight bar.
+
 ## What It Does
 
 | Light | Meaning |
@@ -14,7 +16,7 @@ This project was adapted from [ClaudeTrafficLight](https://github.com/chengxiao8
 | 🟡 **Yellow (steady)** | MiMo is executing a tool |
 | 🔴 **Red (flashing)** | MiMo needs your authorization |
 | 🔴 **Red (steady)** | An error occurred |
-| ⚫ **All off** | MiMo not running or status expired (30 min) |
+| ⚫ **All off** | MiMo is not running or no status update was received for 30 minutes; the indicator process keeps running |
 
 The light appears both as a **desktop mini-window** and a **system tray icon**.
 
@@ -37,7 +39,8 @@ The install script will:
 - Compile `MiMoTrafficLight.exe` and deploy to `%LOCALAPPDATA%\MiMoLight\app\`
 - Copy scripts to `%LOCALAPPDATA%\MiMoLight\scripts\`
 - Copy plugin to `%LOCALAPPDATA%\MiMoLight\plugins\`
-- Try to install plugin to MiMo Code plugin directory (`~/.config/mimocode/plugins/`)
+- Try to install the plugin to the MiMo Code plugin directory (`~/.config/mimocode/plugins/`)
+- Try to install the plugin to the OpenCode plugin directory (`~/.config/opencode/plugins/`)
 
 ### 2. Start
 
@@ -118,8 +121,8 @@ Path: `%LOCALAPPDATA%\MiMoLight\status.json`
 ### Event Probe Plugin
 
 `plugins/mimo-traffic-light.js` is an event probe that:
-1. Logs all MiMo Code events to `%LOCALAPPDATA%\MiMoLight\events.log`
-2. Maps events to states using conservative rules
+1. Logs key state decisions to `%LOCALAPPDATA%\MiMoLight\events.log`
+2. Maps MiMo / OpenCode events to states using a conservative state machine
 3. Writes `status.json` for the desktop app to read
 
 **Event mapping (verified with real MiMo Code events):**
@@ -130,15 +133,19 @@ Path: `%LOCALAPPDATA%\MiMoLight\status.json`
 | `session.created` | Idle |
 | `session.status` → `busy` | Working |
 | `session.status` → `idle` | Done |
-| `message.updated` / `message.part.updated` | Thinking |
-| `message.part.delta` | Thinking |
-| `tool.execute.before` | Working |
+| `message.updated` / `message.part.updated` / `message.part.delta` | Thinking |
+| `tool.execute.before` | Working; Permission when the tool is `question` |
 | `tool.execute.after` | Thinking |
-| `permission.asked` | Permission |
-| `permission.replied` | Thinking |
-| `session.idle` | Done |
+| `permission.asked` / `question.asked` | Permission |
+| `permission.replied` / `question.replied` / `question.rejected` | Thinking |
+| `session.idle` / `server.instance.disposed` | Done |
 | `session.error` / `error` | Error |
-| Unknown events | Thinking (logged to events.log) |
+| `metrics.*` / `session.updated` / `session.diff` and other passive events | Keep current state |
+| Unknown events | Keep current state and log to events.log |
+
+The Permission state is protected: while MiMo is showing an Allow/authorization prompt, noisy `message.*` and `session.updated` events do not prematurely clear the red light. After the user responds, `question.replied` or `tool.execute.after` returns the state to Thinking; final idle/done events then move it to Done.
+
+The Done state is also protected: trailing `message.*` events after task completion will not push the light back to yellow.
 
 ### View Events Log
 
@@ -241,9 +248,9 @@ The launcher auto-detects `mimo`, `mimocode`, `mimo-code`. If none found:
 - Right-click tray icon to locate or exit
 - Click the window or tray icon to bring MiMo terminal to front
 
-### Red light turns off after 30 minutes
+### Light turns off after 30 minutes
 
-Normal behavior. If no status update for 30 minutes, the light turns off (Off state).
+Normal behavior. If no status update is received for 30 minutes, the lamps turn off (Off state), but `MiMoTrafficLight.exe` keeps running and will light up again when a new status arrives.
 
 ## Differences from ClaudeTrafficLight
 
@@ -254,6 +261,7 @@ Normal behavior. If no status update for 30 minutes, the light turns off (Off st
 | Status dir | `%LOCALAPPDATA%\ClaudeLight` | `%LOCALAPPDATA%\MiMoLight` |
 | Launcher | `start-claude.cmd` | `start-mimo.cmd` |
 | Desktop app | `ClaudeTrafficLight.exe` | `MiMoTrafficLight.exe` |
+| Status bar appearance | Dark background | Gray background and gray border |
 
 ## License
 

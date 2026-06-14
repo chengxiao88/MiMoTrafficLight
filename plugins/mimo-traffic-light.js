@@ -301,16 +301,16 @@ function decideState(event) {
     return { state: "Thinking", reason: "permission-released", scheduleDone: true }
   }
 
+  if (isToolAfterEvent(type)) {
+    return { state: "Thinking", reason: "tool-finished", scheduleDone: true }
+  }
+
   if (isPermissionRequestEvent(type, status) || toolName === "question") {
     return { state: "Permission", reason: "permission-requested", cancelDone: true, force: true }
   }
 
   if (isErrorEvent(type, status)) {
     return { state: "Error", reason: "error", cancelDone: true, force: true }
-  }
-
-  if (lastState === "Permission") {
-    return { ignore: true, reason: "protect-permission" }
   }
 
   if (isDoneEvent(type, status)) {
@@ -321,12 +321,12 @@ function decideState(event) {
     return { state: "Idle", reason: "idle", cancelDone: true, force: true }
   }
 
-  if (isWorkingEvent(type, status)) {
-    return { state: "Working", reason: "working", cancelDone: true }
+  if (lastState === "Permission") {
+    return { ignore: true, reason: "protect-permission" }
   }
 
-  if (isToolAfterEvent(type)) {
-    return { state: "Thinking", reason: "tool-finished", scheduleDone: true }
+  if (isWorkingEvent(type, status)) {
+    return { state: "Working", reason: "working", cancelDone: true }
   }
 
   if (shouldIgnoreResidualMessage(type)) {

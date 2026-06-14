@@ -38,6 +38,7 @@ internal sealed class TrafficLightForm : Form
     private const int BorderW = 1;
     private const int BarH = PaddingY * 2 + DotDiameter;
     private const int BarW = PaddingX * 2 + DotDiameter * 3 + DotGap * 2 + BorderW * 2;
+    private const int StaleStatusMinutes = 30;
 
     private bool _dragging;
     private Point _dragStart;
@@ -64,9 +65,9 @@ internal sealed class TrafficLightForm : Form
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
 
-    private static readonly Color BgColor = Color.FromArgb(30, 30, 30);
-    private static readonly Color BorderColor = Color.FromArgb(10, 10, 10);
-    private static readonly Color DotOff = Color.FromArgb(80, 80, 80);
+    private static readonly Color BgColor = Color.FromArgb(112, 112, 112);
+    private static readonly Color BorderColor = Color.FromArgb(190, 190, 190);
+    private static readonly Color DotOff = Color.FromArgb(55, 55, 55);
     private static readonly Color RedOn = Color.FromArgb(220, 60, 60);
     private static readonly Color YellowOn = Color.FromArgb(230, 180, 40);
     private static readonly Color GreenOn = Color.FromArgb(50, 180, 80);
@@ -322,8 +323,9 @@ internal sealed class TrafficLightForm : Form
     {
         if (_lastUpdate == DateTimeOffset.MinValue) return;
         var age = DateTimeOffset.Now - _lastUpdate;
-        if (age.TotalMinutes > 30 && _state != TrafficLightState.Off)
+        if (age.TotalMinutes > StaleStatusMinutes && _state != TrafficLightState.Off)
         {
+            // Stale MiMo activity only dims the lamps; the indicator process stays alive.
             SetState(TrafficLightState.Off, _cwd, _session);
         }
     }
@@ -387,7 +389,7 @@ internal sealed class TrafficLightForm : Form
     {
         return _state switch
         {
-            TrafficLightState.Off => "MiMo not running or status expired",
+            TrafficLightState.Off => "MiMo inactive; light is standing by",
             TrafficLightState.Idle => "MiMo idle",
             TrafficLightState.Done => "MiMo task completed",
             TrafficLightState.Thinking => "MiMo thinking",

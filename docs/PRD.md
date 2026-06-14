@@ -2,7 +2,7 @@
 
 > **来源项目**：ClaudeTrafficLight（已改造）  
 > **当前项目位置**：`C:\Users\ChengXiao\MiMoTrafficLight`  
-> **最后更新**：2026-06-13
+> **最后更新**：2026-06-14
 
 ---
 
@@ -14,7 +14,7 @@ MiMoTrafficLight
 
 ### 1.2 一句话描述
 
-MiMoTrafficLight 是一个 Windows 本地桌面红绿灯工具，用于显示 MiMo Code 当前是否空闲、思考中、执行工具中、等待用户授权或发生错误。
+MiMoTrafficLight 是一个 Windows 本地桌面红绿灯工具，用于显示 MiMo Code 当前是否空闲、思考中、执行工具中、等待用户授权或发生错误。MiMo 状态条采用灰色背景和灰色边框，用于和 ClaudeTrafficLight 的深色状态条区分。
 
 ### 1.3 目标用户
 
@@ -61,6 +61,7 @@ Windows 桌面红黄绿灯 + 托盘图标
 | 状态目录 | `%LOCALAPPDATA%\ClaudeLight` | `%LOCALAPPDATA%\MiMoLight` |
 | 启动脚本 | `start-claude.cmd` | `start-mimo.cmd` |
 | 桌面程序 | `ClaudeTrafficLight.exe` | `MiMoTrafficLight.exe` |
+| 状态条外观 | 深色背景 | 灰色背景、灰色边框 |
 
 ---
 
@@ -70,7 +71,7 @@ Windows 桌面红黄绿灯 + 托盘图标
 
 | 状态 | 枚举值 | 灯效 | 含义 |
 |------|--------|------|------|
-| 未启动 | `Off` | 三灯全灰 | MiMo 未运行或状态超过 30 分钟无更新 |
+| 未启动/待命 | `Off` | 三灯全灭 | MiMo 未运行或状态超过 30 分钟无更新；红绿灯进程继续运行 |
 | 空闲 | `Idle` | 绿灯常亮 | MiMo 已启动，等待用户输入 |
 | 思考中 | `Thinking` | 黄灯慢闪（250ms 切换） | MiMo 正在思考、规划、生成回复 |
 | 执行任务 | `Working` | 黄灯常亮 | MiMo 正在调用工具、读写文件、执行命令 |
@@ -112,15 +113,21 @@ Windows 桌面红黄绿灯 + 托盘图标
 | `session.created` | Idle |
 | `session.status` → `busy` | Working |
 | `session.status` → `idle` | Done |
-| `message.updated` / `message.part.updated` | Thinking |
-| `message.part.delta` | Thinking |
-| `tool.execute.before` | Working |
+| `message.updated` / `message.part.updated` / `message.part.delta` | Thinking |
+| `tool.execute.before` | Working；当工具为 `question` 时为 Permission |
 | `tool.execute.after` | Thinking |
-| `permission.asked` | Permission |
-| `permission.replied` | Thinking |
-| `session.idle` | Done |
+| `permission.asked` / `question.asked` | Permission |
+| `permission.replied` / `question.replied` / `question.rejected` | Thinking |
+| `session.idle` / `server.instance.disposed` | Done |
 | `session.error` / `error` | Error |
-| 未知事件 | Thinking（记录到 events.log） |
+| `metrics.*` / `session.updated` / `session.diff` 等被动事件 | 保持当前状态 |
+| 未知事件 | 保持当前状态，并记录到 events.log |
+
+状态机补充规则：
+- Permission 状态受保护：授权选择界面出现后，普通 `message.*`、`session.updated`、`session.diff` 等事件不得把红灯提前切走。
+- 授权完成后，`question.replied` 或 `tool.execute.after` 允许状态回到 Thinking。
+- Done 状态受保护：任务完成后的尾部 `message.*` 噪声在短时间内不得把绿灯重新切回黄灯。
+- 工具执行结束后如没有明确 Done 事件，插件会在安静窗口后自动写入 Done。
 
 ---
 
@@ -129,8 +136,9 @@ Windows 桌面红黄绿灯 + 托盘图标
 ### 4.1 桌面指示灯窗口
 
 - 位置：屏幕右下角（WorkingArea 右下偏移 16px 水平、8px 垂直）
-- 尺寸：固定 96x22px
-- 外观：深色背景（#1E1E1E）、细边框（#0A0A0A）、三颗 10px 圆点（间距 8px）
+- 尺寸：固定 64x22px（逻辑像素；高 DPI 下由系统缩放）
+- 外观：灰色背景（#707070）、浅灰边框（#BEBEBE）、三颗 10px 圆点（间距 8px）
+- 熄灭灯点颜色：深灰（#373737）
 - 置顶显示（TopMost = true）
 - 无标题栏，可拖拽移动
 - 通过 `WS_EX_TOOLWINDOW` 隐藏于 Alt+Tab 切换列表
@@ -167,11 +175,12 @@ Windows 桌面红黄绿灯 + 托盘图标
 
 - 每 30 秒检查一次最后更新时间戳
 - 超过 30 分钟无状态更新 → 自动切换为 Off
+- Off 只表示灯熄灭/状态待命，不退出、不关闭、不杀掉 `MiMoTrafficLight.exe` 进程
 
 ### 4.6 单实例保护
 
-- 使用命名互斥锁 `Global\MiMoTrafficLight_UserInstance`
-- 第二个实例启动时自动退出
+- 使用当前 Windows 用户 SID 生成命名互斥锁：`Local\MiMoTrafficLight_{sid}`
+- 同一用户第二个实例启动时自动退出
 
 ---
 
@@ -186,21 +195,24 @@ plugins/mimo-traffic-light.js
 安装后复制到：
 - `%LOCALAPPDATA%\MiMoLight\plugins\mimo-traffic-light.js`
 - `%USERPROFILE%\.config\mimocode\plugins\mimo-traffic-light.js`
+- `%USERPROFILE%\.config\opencode\plugins\mimo-traffic-light.js`
 
 ### 5.2 插件功能
 
 1. MiMo Code 启动时自动加载
-2. 记录所有事件到 `%LOCALAPPDATA%\MiMoLight\events.log`
-3. 根据映射规则写入 `status.json`
-4. 不确定的事件先记录到 events.log，不乱猜
+2. 记录关键状态决策到 `%LOCALAPPDATA%\MiMoLight\events.log`
+3. 根据状态机写入 `status.json`
+4. 不确定或被动事件保持当前状态，不乱猜、不把灯误切回黄灯
+5. 支持调试模式：设置 `MIMO_TRAFFIC_LIGHT_DEBUG=1` 后记录更多事件结构信息
 
 ### 5.3 events.log 格式
 
-每条日志包含时间戳和事件 JSON：
+每条日志包含时间戳、事件类型、目标状态和判断原因。默认不记录 `message.part.delta` 的正文内容，避免日志过大或泄露对话正文。
 
 ```
-[2026-06-13T14:10:44.366Z] plugin.initialized {"directory":"..."}
-[2026-06-13T14:10:44.928Z] {"type":"session.created","properties":{...}}
+[2026-06-14T13:56:59.453Z] type=question.asked state=Permission action=written reason=permission-requested
+[2026-06-14T13:57:05.033Z] type=question.replied state=Thinking action=written reason=permission-released
+[2026-06-14T13:57:08.331Z] type=session.idle state=Done action=written reason=done
 ```
 
 ---
@@ -224,7 +236,8 @@ scripts/signal.ps1        旧版信号桥（保留兼容）
 3. 复制脚本到 `%LOCALAPPDATA%\MiMoLight\scripts\`
 4. 复制插件到 `%LOCALAPPDATA%\MiMoLight\plugins\`
 5. 尝试安装插件到 MiMo Code 插件目录
-6. 不写死绝对路径，不修改 `.claude\settings.json`
+6. 尝试安装插件到 OpenCode 插件目录
+7. 不写死绝对路径，不修改 `.claude\settings.json`
 
 ### 6.3 start-mimo.cmd
 
@@ -306,6 +319,7 @@ Get-Content "$env:LOCALAPPDATA\MiMoLight\events.log" -Tail 100
 - **不自动授权**：仅显示等待授权状态
 - **单用户**：每个 Windows 用户独立实例
 - **不使用 Claude Code Hooks**：MiMoTrafficLight 通过插件事件驱动
+- **空闲不退出**：长时间无 MiMo 状态更新时只熄灯，不结束红绿灯进程
 
 ---
 
@@ -328,7 +342,8 @@ MiMoTrafficLight/
 │   └── mimo-traffic-light.js
 ├── docs/
 │   └── PRD.md
-└── README.md
+├── README.md
+└── README_en.md
 ```
 
 安装后目录：
@@ -377,6 +392,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 
 确认 MiMo Code 已安装且在 PATH 中。检查：`where mimo` / `where mimocode` / `where mimo-code`
 
-### 红灯 30 分钟后自动熄灭
+### 红绿灯 30 分钟后自动熄灭
 
-正常行为。状态超过 30 分钟无更新自动进入 Off 状态。
+正常行为。状态超过 30 分钟无更新自动进入 Off 状态，但只熄灭灯，不退出或杀掉 `MiMoTrafficLight.exe`。后续收到新状态后会继续亮灯。
